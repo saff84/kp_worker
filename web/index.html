@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Parser KP</title>
+  <link rel="stylesheet" href="/styles.css?v=9" />
+</head>
+<body>
+  <header>
+    <h1>Parser KP</h1>
+    <div id="userInfo"></div>
+  </header>
+
+  <main>
+    <section id="loginView" class="card">
+      <h2>Вход</h2>
+      <form id="loginForm">
+        <label>Email <input name="email" value="operator@local" /></label>
+        <label>Пароль <input name="password" type="password" value="operator123" /></label>
+        <button type="submit">Войти</button>
+      </form>
+      <p class="hint">admin@local / admin123 для админки</p>
+    </section>
+
+    <section id="appView" class="hidden">
+      <section class="card onboarding">
+        <h2>Пересборка КП на наше оборудование</h2>
+        <ol>
+          <li>Нажмите <b>Создать заявку и загрузить КП</b>.</li>
+          <li>Нажмите <b>Обработать КП</b> (парсинг + сопоставление).</li>
+          <li>Проверьте каждую позицию в таблице и при необходимости замените вручную.</li>
+          <li>Нажмите <b>Экспорт результата</b>.</li>
+        </ol>
+      </section>
+
+      <div class="layout-row">
+        <section class="card upload-card">
+          <h2>1) Загрузка КП</h2>
+          <div class="upload-grid">
+            <input id="requestTitle" placeholder="Название заявки (например: КП клиента 24/04)" />
+            <input id="createFileInput" type="file" />
+            <button id="createAndUploadBtn">Создать заявку и загрузить КП</button>
+          </div>
+          <p class="hint">Поддерживаются: XLSX, XLS, CSV, PDF, DOCX, TXT.</p>
+          <div class="text-kp-box">
+            <h3>Или добавить позиции текстом</h3>
+            <p class="hint">Одна строка = одна позиция. Пустые строки можно оставлять, они будут пропущены.</p>
+            <textarea id="positionsTextInput" rows="8" placeholder="Например:
+Счетчик воды Ду15 с присоединителями
+
+Радиатор биметалл 500мм 10 секций
+Насос циркуляционный Wilo 25/6"></textarea>
+            <button id="createFromTextBtn">Создать заявку из текста</button>
+          </div>
+        </section>
+
+        <section class="card process-card">
+        <h2>2) Обработка и результат</h2>
+        <div class="row">
+          <input id="activeRequestId" placeholder="ID заявки" />
+          <button id="processAllBtn">Обработать КП</button>
+          <button id="loadResults">Обновить результат</button>
+          <button id="createExport">Экспорт результата</button>
+        </div>
+        <div class="process-panel">
+          <div class="process-steps">
+            <span id="stepUpload" class="step done">1. Загрузка</span>
+            <span id="stepParsing" class="step">2. Парсинг</span>
+            <span id="stepMatching" class="step">3. Сопоставление</span>
+            <span id="stepResult" class="step">4. Результат</span>
+          </div>
+          <div class="progress-wrap">
+            <div id="processProgressBar" class="progress-bar"></div>
+          </div>
+          <div id="processMeta" class="hint">Статус: ожидание запуска.</div>
+        </div>
+        <pre id="statusBox"></pre>
+        <div class="results-wrap">
+          <table id="resultsTable">
+            <thead>
+              <tr>
+                <th>Позиция из КП</th>
+                <th>Что подобралось</th>
+                <th>Статус</th>
+                <th>Уверенность</th>
+                <th>Ручная замена</th>
+                <th>Применить</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+      </div>
+
+      <section class="card">
+        <h2>3) Найти старое пересобранное КП</h2>
+        <p class="help-text">Найдите старую заявку по названию, откройте ее и продолжайте правки в таблице выше.</p>
+        <div class="row">
+          <input id="savedSearch" placeholder="Поиск по названию заявки" />
+          <button id="searchSavedBtn">Найти</button>
+          <button id="refreshSavedBtn">Обновить список</button>
+        </div>
+        <table id="savedRequestsTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Название</th>
+              <th>Статус</th>
+              <th>Обновлено</th>
+              <th>Позиций</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="adminQuickSection" class="card hidden">
+        <h2>Админка: управление сопоставлением</h2>
+        <p class="help-text">Выберите вкладку: загрузка каталога, таблица соответствий или стоп-слова (позиции с этими словами не сопоставляются автоматически).</p>
+        <div class="admin-tabs">
+          <button id="adminTabCatalog" class="active">Каталог</button>
+          <button id="adminTabCompetitors">Соответствия конкурентов</button>
+          <button id="adminTabStopWords">Стоп-слова</button>
+        </div>
+        <div id="adminPanelCatalog" class="admin-panel">
+          <div class="row">
+            <button id="downloadCatalogTemplate">Шаблон каталога</button>
+          </div>
+          <div class="row">
+            <input id="catalogImportFile" type="file" accept=".csv,.xlsx,.xls" />
+            <button id="importCatalogBtn">Импорт каталога</button>
+          </div>
+          <div class="row">
+            <button id="reindexCatalogBtn">Реиндексация каталога</button>
+          </div>
+          <div class="admin-info">
+            <b>Зачем нужна реиндексация:</b> обновляет векторный индекс Qdrant по текущему активному каталогу, чтобы поиск по смыслу учитывал новые и измененные позиции.
+            <br />
+            <b>Когда запускать:</b> после массового импорта/больших правок каталога, после смены embedding-модели или если видите падение качества автосопоставления.
+          </div>
+          <div class="admin-info">
+            <b>Как составлять правила словаря сопоставления:</b>
+            <br />
+            1) Формулируйте правило как: <code>если в КП есть [условие], то в нашем каталоге обязательно [маркер]</code>.
+            <br />
+            2) Для условия используйте ключевые основы слов (например: <code>счетчик</code>, <code>присоединител</code>) — так сработают формы слова.
+            <br />
+            3) Для обязательного маркера используйте точный термин каталога (например: <code>КМЧ</code>).
+            <br />
+            4) Пример: <code>счетчик + присоединител*</code> в КП → искать только позиции с <code>КМЧ</code>.
+            <br />
+            5) После добавления/изменения правил запускайте <b>Реиндексацию каталога</b> и проверяйте результат на 3-5 типовых КП.
+          </div>
+          <div class="admin-info">
+            <b>Словарь правил матчинга (добавление и удаление)</b>
+            <div class="rule-form">
+              <label>Аннотация правила
+                <input id="ruleAnnotationInput" placeholder="Например: Счетчик с присоединителями -> только КМЧ" />
+              </label>
+              <label>Условия в позиции КП (через запятую)
+                <input id="ruleWhenAllInput" placeholder="счетчик, присоединител" />
+              </label>
+              <label>Обязательные маркеры в нашем каталоге (через запятую)
+                <input id="ruleRequireAnyInput" placeholder="кмч" />
+              </label>
+              <div class="row">
+                <button id="addCatalogRuleBtn">Добавить правило</button>
+                <button id="cancelCatalogRuleEditBtn" class="ghost-btn hidden" type="button">Отменить редактирование</button>
+                <button id="loadCatalogRulesBtn" class="ghost-btn" type="button">Обновить список</button>
+              </div>
+            </div>
+            <div id="catalogRulesList" class="rules-list"></div>
+          </div>
+        </div>
+        <div id="adminPanelCompetitors" class="admin-panel hidden">
+          <div class="row">
+            <button id="downloadCompetitorTemplate">Шаблон соответствий</button>
+          </div>
+          <div class="row">
+            <input id="competitorImportFile" type="file" accept=".csv,.xlsx,.xls" />
+            <button id="importCompetitorBtn">Импорт соответствий конкурентов</button>
+          </div>
+        </div>
+        <div id="adminPanelStopWords" class="admin-panel hidden">
+          <p class="hint">Одно стоп-слово на строку. Пример: <code>комплект</code>, <code>набор</code>, <code>ремкомплект</code>.</p>
+          <textarea id="stopWordsInput" rows="8" placeholder="Введите стоп-слова, каждое с новой строки"></textarea>
+          <div class="row">
+            <button id="loadStopWordsBtn">Загрузить список</button>
+            <button id="saveStopWordsBtn">Сохранить список</button>
+          </div>
+        </div>
+        <div id="adminImportViz" class="admin-import-viz hidden"></div>
+        <pre id="adminImportReport"></pre>
+      </section>
+    </section>
+  </main>
+
+  <div id="manualSearchModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manualSearchTitle">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="manualSearchTitle">Ручной подбор товара</h3>
+        <button id="manualSearchClose" class="ghost-btn">Закрыть</button>
+      </div>
+      <p class="hint">Введите название, бренд или SKU нашего товара и выберите замену из списка.</p>
+      <div class="row">
+        <input id="manualSearchQuery" placeholder="Например: присоединитель Ду15 3/4" />
+        <button id="manualSearchRun">Найти</button>
+      </div>
+      <div id="manualSearchResults" class="manual-results"></div>
+    </div>
+  </div>
+
+  <script src="/app.js?v=10"></script>
+</body>
+</html>

@@ -60,6 +60,35 @@ docker compose up --build
 
 Alembic миграции применяются автоматически в `api` и `worker` командах.
 
+### Публичный сервер (VPS): порт 80, без демо-логинов
+
+На машине с публичным IP (Ubuntu/Debian, Docker и Docker Compose v2 уже установлены):
+
+```bash
+sudo apt update && sudo apt install -y git
+git clone <URL-вашего-репозитория> parser_kp && cd parser_kp
+cp .env.example .env
+```
+
+Отредактируйте `.env` для продакшена: задайте длинный случайный `SECRET_KEY`, выставьте `SEED_DEMO_USERS=false`, укажите `ADMIN_EMAILS` (через запятую, без пробелов вокруг email) — только эти адреса получат вкладку админки и доступ к `/api/v1/admin/*`. При желании смените пароль PostgreSQL в `docker-compose.yml` (сервис `db`) и в `DATABASE_URL`.
+
+```bash
+# В docker-compose.yml у сервиса api замените порты на 80:8000 (см. комментарий в файле), затем:
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Интерфейс и API будут доступны по `http://<публичный-IP>/` (порт 80). Откройте порт 80 в облачном security group / `sudo ufw allow 80/tcp` при использовании UFW.
+
+Создайте первого пользователя (логин по email/паролю в UI сохраняется):
+
+```bash
+docker compose exec api python -m app.cli.create_user --email you@example.com --password 'ВашНадёжныйПароль' --name 'Admin'
+```
+
+Убедитесь, что этот email входит в `ADMIN_EMAILS`, если нужны импорт каталога и прочие админ-эндпоинты.
+
+Локально при `SEED_DEMO_USERS=true` по-прежнему создаются учётные записи для разработки (см. `app/main.py`, функция `seed_data`); на публичном сервере держите `SEED_DEMO_USERS=false`.
+
 ## Локальный запуск без Docker (если PostgreSQL/Redis уже есть)
 
 ```powershell
@@ -81,19 +110,17 @@ python -m venv .venv
 
 ## Быстрый сценарий для пользователя
 
-1. Войдите под `operator@local / operator123`.
-2. Перейдите во вкладку `1. Загрузка КП`.
-3. Нажмите `Создать заявку и загрузить КП` (выберите файл КП в формате XLSX/XLS/CSV/PDF/DOCX/TXT).
-4. Перейдите во вкладку `3. Сопоставление` и запустите:
-   - `Запустить парсинг`
-   - `Запустить сопоставление`
-5. Нажмите `Загрузить результаты`, вручную подтвердите/отклоните спорные позиции.
-6. Нажмите `Экспорт` для выгрузки результата.
+1. Войдите (email и пароль выдаёт администратор или создаются при локальной разработке с `SEED_DEMO_USERS=true`).
+2. Перейдите к шагу загрузки КП.
+3. Нажмите `Создать заявку и загрузить КП` (файл XLSX/XLS/CSV/PDF/DOCX/TXT) или создайте заявку из текста.
+4. Запустите обработку (парсинг и сопоставление), проверьте таблицу результатов.
+5. При необходимости выполните экспорт.
 
-## Демо-логины
+## Пользователи и роли
 
-- `operator@local` / `operator123`
-- `admin@local` / `admin123`
+- Вход в UI и API по email и паролю без изменений.
+- Админские возможности (вкладка в UI и `/api/v1/admin/*`) доступны только email из переменной окружения `ADMIN_EMAILS` (список через запятую).
+- На публичном сервере задайте `SEED_DEMO_USERS=false` и создавайте пользователей командой `python -m app.cli.create_user` (в Docker: `docker compose exec api python -m app.cli.create_user ...`).
 
 ## Статусы заявки
 

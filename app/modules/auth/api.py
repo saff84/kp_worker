@@ -32,7 +32,12 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
         "refresh_token": create_refresh_token(user.id),
         "token_type": "Bearer",
         "expires_in": settings.access_token_minutes * 60,
-        "user": {"id": user.id, "email": user.email, "full_name": user.full_name, "roles": ["admin" if user.email == "admin@local" else "operator"]},
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": ["admin"] if settings.is_admin_email(user.email) else ["operator"],
+        },
     }
 
 

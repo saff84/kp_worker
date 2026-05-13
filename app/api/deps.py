@@ -29,6 +29,6 @@ def get_current_user(
 
 
 def require_admin(current: User = Depends(get_current_user)) -> User:
-    if current.email != "admin@local":
+    if not settings.is_admin_email(current.email):
         raise HTTPException(status_code=401, detail=error_payload("unauthorized", "Admin role required"))
     return current

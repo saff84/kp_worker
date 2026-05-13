@@ -41,11 +41,20 @@ app.include_router(history_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 
 
+def _ensure_roles(db) -> None:
+    if db.scalar(select(Role)):
+        return
+    db.add_all([Role(name="admin"), Role(name="operator"), Role(name="reviewer")])
+    db.commit()
+
+
 def seed_data() -> None:
     with SessionLocal() as db:
+        _ensure_roles(db)
+        if not settings.seed_demo_users:
+            return
         if db.scalar(select(User).where(User.email == "admin@local")):
             return
-        db.add_all([Role(name="admin"), Role(name="operator"), Role(name="reviewer")])
         admin = User(email="admin@local", password_hash=hash_password("admin123"), full_name="Admin")
         operator = User(email="operator@local", password_hash=hash_password("operator123"), full_name="Operator")
         category = ProductCategory(name="Pumps")

@@ -36,7 +36,7 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
             "id": user.id,
             "email": user.email,
             "full_name": user.full_name,
-            "roles": ["admin"] if settings.is_admin_email(user.email) else ["operator"],
+            "roles": ["admin"] if (user.is_admin or settings.is_admin_email(user.email)) else ["operator"],
         },
     }
 

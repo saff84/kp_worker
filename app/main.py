@@ -55,8 +55,18 @@ def seed_data() -> None:
             return
         if db.scalar(select(User).where(User.email == "admin@local")):
             return
-        admin = User(email="admin@local", password_hash=hash_password("admin123"), full_name="Admin")
-        operator = User(email="operator@local", password_hash=hash_password("operator123"), full_name="Operator")
+        admin = User(
+            email="admin@local",
+            password_hash=hash_password("admin123"),
+            full_name="Admin",
+            is_admin=True,
+        )
+        operator = User(
+            email="operator@local",
+            password_hash=hash_password("operator123"),
+            full_name="Operator",
+            is_admin=False,
+        )
         category = ProductCategory(name="Pumps")
         db.add_all([admin, operator, category])
         db.flush()

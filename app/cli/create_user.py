@@ -14,6 +14,11 @@ def main() -> None:
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--name", default="", help="Full name (optional)")
+    parser.add_argument(
+        "--admin",
+        action="store_true",
+        help="Grant admin UI and /api/v1/admin/* (stored in DB; no need to list email in ADMIN_EMAILS)",
+    )
     args = parser.parse_args()
 
     with SessionLocal() as db:
@@ -23,11 +28,13 @@ def main() -> None:
             email=args.email.strip(),
             password_hash=hash_password(args.password),
             full_name=args.name.strip() or None,
+            is_admin=bool(args.admin),
         )
         db.add(user)
         db.commit()
-        print(f"Created user {args.email}")
-        print("Grant admin UI/API: add this email to ADMIN_EMAILS in .env and restart the API.")
+        print(f"Created user {args.email} (is_admin={user.is_admin})")
+        if not user.is_admin:
+            print("Optional: pass --admin for full admin access, or add email to ADMIN_EMAILS in .env and restart API.")
 
 
 if __name__ == "__main__":

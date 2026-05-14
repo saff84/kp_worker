@@ -70,7 +70,7 @@ git clone <URL-вашего-репозитория> parser_kp && cd parser_kp
 cp .env.example .env
 ```
 
-Отредактируйте `.env` для продакшена: задайте длинный случайный `SECRET_KEY`, выставьте `SEED_DEMO_USERS=false`, укажите `ADMIN_EMAILS` (через запятую, без пробелов вокруг email) — только эти адреса получат вкладку админки и доступ к `/api/v1/admin/*`. При желании смените пароль PostgreSQL в `docker-compose.yml` (сервис `db`) и в `DATABASE_URL`.
+Отредактируйте `.env` для продакшена: задайте длинный случайный `SECRET_KEY`, выставьте `SEED_DEMO_USERS=false`. Админка и `/api/v1/admin/*` доступны пользователям с флагом **`is_admin` в БД** (см. `create_user --admin`) и/или email из **`ADMIN_EMAILS`** (через запятую). При желании смените пароль PostgreSQL в `docker-compose.yml` (сервис `db`) и в `DATABASE_URL`.
 
 ```bash
 # В docker-compose.yml у сервиса api замените порты на 80:8000 (см. комментарий в файле), затем:
@@ -82,10 +82,16 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 Создайте первого пользователя (логин по email/паролю в UI сохраняется):
 
 ```bash
-docker compose exec api python -m app.cli.create_user --email you@example.com --password 'ВашНадёжныйПароль' --name 'Admin'
+docker compose exec api python -m app.cli.create_user --email you@example.com --password 'ВашНадёжныйПароль' --name 'Admin' --admin
 ```
 
-Убедитесь, что этот email входит в `ADMIN_EMAILS`, если нужны импорт каталога и прочие админ-эндпоинты.
+Флаг **`--admin`** выставляет в таблице `users` поле **`is_admin = true`** (вкладка админки и админ-API без правки `ADMIN_EMAILS`). Альтернатива: добавить email в `ADMIN_EMAILS` в `.env` и перезапустить API.
+
+Для уже созданного пользователя без `--admin`:
+
+```sql
+UPDATE users SET is_admin = true WHERE lower(email) = 'you@example.com';
+```
 
 Локально при `SEED_DEMO_USERS=true` по-прежнему создаются учётные записи для разработки (см. `app/main.py`, функция `seed_data`); на публичном сервере держите `SEED_DEMO_USERS=false`.
 
@@ -119,8 +125,8 @@ python -m venv .venv
 ## Пользователи и роли
 
 - Вход в UI и API по email и паролю без изменений.
-- Админские возможности (вкладка в UI и `/api/v1/admin/*`) доступны только email из переменной окружения `ADMIN_EMAILS` (список через запятую).
-- На публичном сервере задайте `SEED_DEMO_USERS=false` и создавайте пользователей командой `python -m app.cli.create_user` (в Docker: `docker compose exec api python -m app.cli.create_user ...`).
+- Админские возможности (вкладка в UI и `/api/v1/admin/*`) если у пользователя **`users.is_admin = true`** в БД и/или email указан в **`ADMIN_EMAILS`** в `.env`.
+- На публичном сервере задайте `SEED_DEMO_USERS=false` и создавайте пользователей: `python -m app.cli.create_user ... --admin` (в Docker: `docker compose exec api python -m app.cli.create_user ...`).
 
 ## Статусы заявки
 

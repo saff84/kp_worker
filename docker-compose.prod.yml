@@ -1,5 +1,5 @@
 # Production-style overrides: no --reload (hot reload is for local dev only).
-# For port 80 on the host, in docker-compose.yml change api ports from "8000:8000" to "80:8000".
+# Порт хоста задаётся в docker-compose.yml (по умолчанию 80:8000).
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 services:
   api:

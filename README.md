@@ -60,9 +60,13 @@ docker compose up --build
 
 Alembic миграции применяются автоматически в `api` и `worker` командах.
 
-### Публичный сервер (VPS): порт 80, без демо-логинов
+После `docker compose up --build` откройте в браузере:
+- UI: <http://127.0.0.1/>
+- API docs: <http://127.0.0.1/docs>
 
-На машине с публичным IP (Ubuntu/Debian, Docker и Docker Compose v2 уже установлены):
+### Публичный сервер (VPS)
+
+На машине с публичным IP интерфейс и API доступны по `http://<публичный-IP>/` (порт 80). Откройте порт 80 в security group облака / `sudo ufw allow 80/tcp` при использовании UFW.
 
 ```bash
 sudo apt update && sudo apt install -y git
@@ -73,11 +77,10 @@ cp .env.example .env
 Отредактируйте `.env` для продакшена: задайте длинный случайный `SECRET_KEY`, выставьте `SEED_DEMO_USERS=false`. Админка и `/api/v1/admin/*` доступны пользователям с флагом **`is_admin` в БД** (см. `create_user --admin`) и/или email из **`ADMIN_EMAILS`** (через запятую). При желании смените пароль PostgreSQL в `docker-compose.yml` (сервис `db`) и в `DATABASE_URL`.
 
 ```bash
-# В docker-compose.yml у сервиса api замените порты на 80:8000 (см. комментарий в файле), затем:
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-Интерфейс и API будут доступны по `http://<публичный-IP>/` (порт 80). Откройте порт 80 в облачном security group / `sudo ufw allow 80/tcp` при использовании UFW.
+В `docker-compose.yml` сервис `api` уже публикует **`80:8000`** (интерфейс на стандартном HTTP-порту).
 
 Создайте первого пользователя (логин по email/паролю в UI сохраняется):
 

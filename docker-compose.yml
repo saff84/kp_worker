@@ -40,8 +40,8 @@ services:
       PYTHONPATH: /app
       QDRANT_URL: http://qdrant:6333
     ports:
-      # Локально оставьте 8000. На VPS с публичным IP для UI на 80 порту замените на "80:8000".
-      - "8000:8000"
+      # Хост:80 → контейнер:8000 (как на VPS). Если порт 80 занят локально — замените на "8000:8000".
+      - "80:8000"
     depends_on:
       db:
         condition: service_healthy

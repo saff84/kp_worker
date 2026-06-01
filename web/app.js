@@ -204,6 +204,9 @@ async function processAll() {
       const parseStatus = await api(`/requests/${rid}/parsing/status`);
       $("statusBox").textContent = `Парсинг: ${parseStatus.status}\nИзвлечено: ${parseStatus.parsed_items || 0}`;
       setProgress(20 + Math.round((parseStatus.progress || 0) * 0.45), `Парсинг: ${parseStatus.status}`);
+      if (parseStatus.status === "failed") {
+        throw new Error(parseStatus.error || "Не удалось извлечь позиции из файла.");
+      }
       if (parseStatus.status === "completed") {
         parseDone = true;
         break;

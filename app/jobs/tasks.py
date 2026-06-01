@@ -362,6 +362,103 @@ def _first_non_empty(row: dict, aliases: list[str]) -> str | None:
     return None
 
 
+_PDF_NOISE = {
+    "итого",
+    "всего",
+    "покупатель",
+    "поставщик",
+    "бухгалтер",
+    "руководитель",
+    "страница",
+    "счет",
+    "счёт",
+    "инн",
+    "кпп",
+    "огрн",
+}
+
+
+def _looks_like_position(name: str) -> bool:
+    text = (name or "").strip()
+    if len(text) < 4:
+        return False
+    alnum = sum(1 for ch in text if ch.isalnum())
+    return alnum >= max(4, int(len(text) * 0.25))
+
+
+def _filter_position_rows(rows: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    for item in rows:
+        text = (item.get("name") or "").lower()
+        if any(n in text for n in _PDF_NOISE):
+            continue
+        if not _looks_like_position(item.get("name") or ""):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _parse_text_lines_to_rows(text_lines: list[str]) -> list[dict]:
+    lines: list[dict] = []
+    for raw in text_lines:
+        line = raw.strip()
+        if not line:
+            continue
+        m = re.match(r"^\s*\d+[\.\)]\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+([A-Za-zА-Яа-яёЁ\.]+)\s*$", line)
+        if m:
+            lines.append(
+                {
+                    "name": m.group(1).strip(),
+                    "quantity": m.group(2).replace(",", "."),
+                    "unit": m.group(3).strip(),
+                }
+            )
+            continue
+        cols = [c.strip() for c in re.split(r"\t+| {2,}|;", line) if c.strip()]
+        if len(cols) >= 4:
+            lines.append(
+                {
+                    "name": cols[0],
+                    "article": cols[1],
+                    "brand": cols[2],
+                    "quantity": cols[3],
+                }
+            )
+        elif _looks_like_position(line):
+            lines.append({"name": line})
+    return _filter_position_rows(lines)
+
+
+def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        return []
+    out: list[str] = []
+    doc = None
+    try:
+        doc = fitz.open(str(path))
+        for page_idx in range(min(len(doc), max_pages)):
+            page = doc[page_idx]
+            text = (page.get_text("text") or "").strip()
+            if len(text) >= 30:
+                out.extend(ln.strip() for ln in text.splitlines() if ln.strip())
+                continue
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                ocr = pytesseract.image_to_string(img, lang="rus+eng", config="--psm 6")
+                out.extend(ln.strip() for ln in ocr.splitlines() if ln.strip())
+            except Exception:
+                continue
+    except Exception:
+        return []
+    finally:
+        if doc is not None:
+            doc.close()
+    return out
+
+
 def _extract_rows_from_file(storage_key: str) -> list[dict]:
     path = Path(storage_key)
     if not path.exists():
@@ -437,55 +534,19 @@ def _extract_rows_from_file(storage_key: str) -> list[dict]:
         if rows:
             return rows
 
-        # 2) Fallback to plain text extraction and row-pattern parsing.
+        # 2) Text layer (pypdf), then 3) OCR for scanned PDF (pymupdf + tesseract).
+        text_lines: list[str] = []
         reader = PdfReader(str(path))
-        lines: list[dict] = []
-        for page in reader.pages[:5]:
-            text = (page.extract_text() or "").splitlines()
-            if not text or len("".join(text).strip()) < 20:
-                # OCR fallback for scanned PDFs (optional, depends on local tesseract installation).
-                for img in getattr(page, "images", []):
-                    try:
-                        image = Image.open(io.BytesIO(img.data))
-                        ocr_text = pytesseract.image_to_string(image, lang="rus+eng")
-                        text.extend([x for x in ocr_text.splitlines() if x.strip()])
-                    except Exception:
-                        continue
-            for line in text:
-                line = line.strip()
-                if line:
-                    # Typical row: "1 Наименование ... 360 шт"
-                    m = re.match(r"^\s*\d+\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+([A-Za-zА-Яа-я]+)\s*$", line)
-                    if m:
-                        lines.append(
-                            {
-                                "name": m.group(1).strip(),
-                                "quantity": m.group(2).replace(",", "."),
-                                "unit": m.group(3).strip(),
-                            }
-                        )
-                        continue
-                    cols = [c.strip() for c in re.split(r"\t+| {2,}|;", line) if c.strip()]
-                    if len(cols) >= 4:
-                        lines.append(
-                            {
-                                "name": cols[0],
-                                "article": cols[1],
-                                "brand": cols[2],
-                                "quantity": cols[3],
-                            }
-                        )
-                    else:
-                        lines.append({"name": line})
-        # remove obvious service lines that are not positions
-        filtered = []
-        noise = {"итого", "всего", "покупатель", "поставщик", "бухгалтер", "руководитель"}
-        for item in lines:
-            text = (item.get("name") or "").lower()
-            if any(n in text for n in noise):
-                continue
-            filtered.append(item)
-        return filtered
+        for page in reader.pages[:15]:
+            text_lines.extend((page.extract_text() or "").splitlines())
+        parsed = _parse_text_lines_to_rows(text_lines)
+        if parsed:
+            return parsed
+
+        ocr_lines = _pdf_ocr_text_lines(path, max_pages=15)
+        if ocr_lines:
+            return _parse_text_lines_to_rows(ocr_lines)
+        return []
     if lower.endswith(".docx"):
         doc = Document(str(path))
         rows: list[dict] = []
@@ -581,7 +642,12 @@ def parsing_task(request_id: str) -> None:
                 rows = _extract_rows_from_file(latest_file.storage_key)
                 parsed_rows = _rows_to_parsed_lines(rows)
         if not parsed_rows:
-            parsed_rows = _rows_to_parsed_lines([{"name": "Насос Grundfos CR 3-15, 2 шт", "article": "CR3-15", "brand": "Grundfos", "quantity": 2}])
+            req.parse_status = "failed"
+            req.status = "uploaded"
+            req.total_items = 0
+            req.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            return
         db.query(ParsedItem).filter(ParsedItem.request_id == request_id).delete()
         for row in parsed_rows:
             db.add(

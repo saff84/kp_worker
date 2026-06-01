@@ -39,12 +39,19 @@ def parsing_status(request_id: str, db: Session = Depends(get_db), current: User
     if not req:
         raise HTTPException(status_code=404, detail=error_payload("request_not_found", "Request not found"))
     progress = 100 if req.parse_status == "completed" else 0 if req.parse_status == "not_started" else 50
+    error = None
+    if req.parse_status == "failed":
+        error = (
+            "Не удалось извлечь позиции из файла. "
+            "Часто это скан PDF без текстового слоя — нужен Tesseract в контейнере worker. "
+            "Попробуйте XLSX/CSV или вставьте позиции текстом."
+        )
     return {
         "request_id": request_id,
         "status": req.parse_status,
         "progress": progress,
         "parsed_items": req.total_items,
         "started_at": req.updated_at.isoformat(),
-        "finished_at": req.updated_at.isoformat() if req.parse_status == "completed" else None,
-        "error": None,
+        "finished_at": req.updated_at.isoformat() if req.parse_status in {"completed", "failed"} else None,
+        "error": error,
     }

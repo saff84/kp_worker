@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.errors import error_payload
 from app.db.session import get_db
-from app.jobs.queue import queue
+from app.jobs.queue import MATCH_JOB_TIMEOUT_SEC, queue
 from app.jobs.tasks import matching_task
 from app.models import RequestItem, User
 
@@ -29,7 +29,12 @@ def start_matching(request_id: str, payload: MatchStart, db: Session = Depends(g
     req.match_status = "queued"
     db.commit()
     try:
-        job = queue.enqueue(matching_task, request_id, payload.auto_approve_threshold)
+        job = queue.enqueue(
+            matching_task,
+            request_id,
+            payload.auto_approve_threshold,
+            job_timeout=MATCH_JOB_TIMEOUT_SEC,
+        )
         return {"request_id": request_id, "job_id": job.id, "status": "queued"}
     except Exception:
         matching_task(request_id, payload.auto_approve_threshold)

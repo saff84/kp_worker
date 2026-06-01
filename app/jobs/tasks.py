@@ -22,6 +22,7 @@ from app.services.catalog_match_rules import apply_catalog_rule_filter, list_cat
 from app.services.hybrid_search import ensure_catalog_index, vector_search
 from app.services.stop_words import load_stop_words
 from app.services.storage import export_path
+from app.jobs.parse_progress import set_parse_phase
 
 
 _STOP_WORDS = {
@@ -445,7 +446,7 @@ def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
                 out.extend(ln.strip() for ln in text.splitlines() if ln.strip())
                 continue
             try:
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 ocr = pytesseract.image_to_string(img, lang="rus+eng", config="--psm 6")
                 out.extend(ln.strip() for ln in ocr.splitlines() if ln.strip())
@@ -459,7 +460,7 @@ def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
     return out
 
 
-def _extract_rows_from_file(storage_key: str) -> list[dict]:
+def _extract_rows_from_file(storage_key: str, request_id: str | None = None) -> list[dict]:
     path = Path(storage_key)
     if not path.exists():
         return []
@@ -543,7 +544,13 @@ def _extract_rows_from_file(storage_key: str) -> list[dict]:
         if parsed:
             return parsed
 
-        ocr_lines = _pdf_ocr_text_lines(path, max_pages=15)
+        if request_id:
+            set_parse_phase(request_id, "ocr")
+        try:
+            ocr_lines = _pdf_ocr_text_lines(path, max_pages=15)
+        finally:
+            if request_id:
+                set_parse_phase(request_id, "extracting")
         if ocr_lines:
             return _parse_text_lines_to_rows(ocr_lines)
         return []
@@ -632,41 +639,55 @@ def parsing_task(request_id: str) -> None:
         if not req:
             return
         req.parse_status = "running"
+        req.updated_at = datetime.now(timezone.utc)
         db.commit()
-        parsed_rows: list[dict] = []
-        if req.input_text:
-            parsed_rows = _rows_to_parsed_lines([{"name": line.strip()} for line in req.input_text.splitlines() if line.strip()])
-        if not parsed_rows:
-            latest_file = db.scalar(select(UploadedFile).where(UploadedFile.request_id == request_id).order_by(UploadedFile.created_at.desc()))
-            if latest_file:
-                rows = _extract_rows_from_file(latest_file.storage_key)
-                parsed_rows = _rows_to_parsed_lines(rows)
-        if not parsed_rows:
+        set_parse_phase(request_id, "extracting")
+        try:
+            parsed_rows: list[dict] = []
+            if req.input_text:
+                parsed_rows = _rows_to_parsed_lines(
+                    [{"name": line.strip()} for line in req.input_text.splitlines() if line.strip()]
+                )
+            if not parsed_rows:
+                latest_file = db.scalar(
+                    select(UploadedFile)
+                    .where(UploadedFile.request_id == request_id)
+                    .order_by(UploadedFile.created_at.desc())
+                )
+                if latest_file:
+                    rows = _extract_rows_from_file(latest_file.storage_key, request_id=request_id)
+                    parsed_rows = _rows_to_parsed_lines(rows)
+            if not parsed_rows:
+                req.parse_status = "failed"
+                req.status = "uploaded"
+                req.total_items = 0
+                return
+            db.query(ParsedItem).filter(ParsedItem.request_id == request_id).delete()
+            for row in parsed_rows:
+                db.add(
+                    ParsedItem(
+                        request_id=request_id,
+                        raw_text=row["raw_text"],
+                        item_name=row["item_name"],
+                        article=row["article"],
+                        brand=row["brand"],
+                        quantity=row["quantity"],
+                        parse_confidence=row["parse_confidence"],
+                        specs=row["specs"],
+                    )
+                )
+            req.total_items = len(parsed_rows)
+            req.parse_status = "completed"
+            req.status = "parsed"
+        except Exception:
             req.parse_status = "failed"
             req.status = "uploaded"
             req.total_items = 0
+            raise
+        finally:
             req.updated_at = datetime.now(timezone.utc)
             db.commit()
-            return
-        db.query(ParsedItem).filter(ParsedItem.request_id == request_id).delete()
-        for row in parsed_rows:
-            db.add(
-                ParsedItem(
-                    request_id=request_id,
-                    raw_text=row["raw_text"],
-                    item_name=row["item_name"],
-                    article=row["article"],
-                    brand=row["brand"],
-                    quantity=row["quantity"],
-                    parse_confidence=row["parse_confidence"],
-                    specs=row["specs"],
-                )
-            )
-        req.total_items = len(parsed_rows)
-        req.parse_status = "completed"
-        req.status = "parsed"
-        req.updated_at = datetime.now(timezone.utc)
-        db.commit()
+            set_parse_phase(request_id, None)
 
 
 def matching_task(request_id: str, threshold: float) -> None:

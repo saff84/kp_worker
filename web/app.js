@@ -20,6 +20,102 @@ const STATUS_RU = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+let ocrTimerInterval = null;
+let ocrTimerStartedAtMs = null;
+
+function formatDuration(sec) {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+function updateOcrTimerTick() {
+  if (!ocrTimerStartedAtMs) return;
+  const elapsed = Math.floor((Date.now() - ocrTimerStartedAtMs) / 1000);
+  $("ocrTimerDisplay").textContent = formatDuration(elapsed);
+  const bar = $("ocrTimingBar");
+  if (bar) bar.style.width = `${Math.min(100, Math.round((elapsed / 300) * 100))}%`;
+  const hint = $("ocrTimerHint");
+  if (hint) {
+    if (elapsed < 60) hint.textContent = "Обычно 1–5 минут в зависимости от числа страниц.";
+    else if (elapsed < 180) hint.textContent = "Идёт распознавание… Большие сканы занимают больше времени.";
+    else hint.textContent = "OCR всё ещё работает. Можно подождать или проверить логи worker на сервере.";
+  }
+}
+
+function showOcrTimingModal(st) {
+  const modal = $("ocrTimingModal");
+  if (!modal) return;
+  if (st?.ocr_started_at) {
+    const serverMs = Date.parse(st.ocr_started_at);
+    if (!Number.isNaN(serverMs)) ocrTimerStartedAtMs = serverMs;
+  }
+  if (!ocrTimerStartedAtMs) ocrTimerStartedAtMs = Date.now();
+  if (typeof st?.ocr_elapsed_sec === "number") {
+    ocrTimerStartedAtMs = Date.now() - st.ocr_elapsed_sec * 1000;
+  }
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+  const meta = $("ocrTimerMeta");
+  if (meta) meta.textContent = "Статус: OCR активен на сервере";
+  updateOcrTimerTick();
+  if (!ocrTimerInterval) {
+    ocrTimerInterval = setInterval(updateOcrTimerTick, 1000);
+  }
+}
+
+function hideOcrTimingModal() {
+  const modal = $("ocrTimingModal");
+  if (modal) {
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+  }
+  if (ocrTimerInterval) {
+    clearInterval(ocrTimerInterval);
+    ocrTimerInterval = null;
+  }
+  ocrTimerStartedAtMs = null;
+  const bar = $("ocrTimingBar");
+  if (bar) bar.style.width = "0%";
+  $("ocrTimerDisplay").textContent = "00:00";
+}
+
+function syncOcrTimingModal(st, _tick, { trackOcr = false } = {}) {
+  if (!trackOcr) return;
+  if (st?.ocr_active) {
+    showOcrTimingModal(st);
+    return;
+  }
+  if (st?.status === "completed" || st?.status === "failed") {
+    hideOcrTimingModal();
+  }
+}
+
+/** Ожидание фоновой задачи (парсинг OCR на скане может занять несколько минут). */
+async function waitJobStatus(statusUrl, { maxSeconds = 360, label = "Задача", formatBox, trackOcr = false }) {
+  try {
+    for (let i = 0; i < maxSeconds; i++) {
+      const st = await api(statusUrl);
+      syncOcrTimingModal(st, i, { trackOcr });
+      if (formatBox) formatBox(st, i);
+      if (st.status === "failed") {
+        throw new Error(st.error || `${label}: не удалось выполнить.`);
+      }
+      if (st.status === "completed") {
+        return st;
+      }
+      await sleep(1000);
+    }
+    throw new Error(
+      `${label} не завершилась за ${maxSeconds} с. ` +
+        "Возможно, идёт OCR скана PDF — проверьте логи worker и нажмите «Обработать КП» ещё раз через минуту."
+    );
+  } finally {
+    if (trackOcr) hideOcrTimingModal();
+  }
+}
+
 function setProgress(percent, meta) {
   $("processProgressBar").style.width = `${Math.max(0, Math.min(100, percent))}%`;
   if (meta) $("processMeta").textContent = meta;
@@ -197,23 +293,28 @@ async function processAll() {
   try {
     setStage("parsing", "Парсинг запущен...");
     $("statusBox").textContent = "Запуск парсинга...";
-    await api(`/requests/${rid}/parsing/start`, { method: "POST", body: JSON.stringify({ force_reparse: false }) });
+    await api(`/requests/${rid}/parsing/start`, {
+      method: "POST",
+      body: JSON.stringify({ force_reparse: true }),
+    });
 
-    let parseDone = false;
-    for (let i = 0; i < 30; i++) {
-      const parseStatus = await api(`/requests/${rid}/parsing/status`);
-      $("statusBox").textContent = `Парсинг: ${parseStatus.status}\nИзвлечено: ${parseStatus.parsed_items || 0}`;
-      setProgress(20 + Math.round((parseStatus.progress || 0) * 0.45), `Парсинг: ${parseStatus.status}`);
-      if (parseStatus.status === "failed") {
-        throw new Error(parseStatus.error || "Не удалось извлечь позиции из файла.");
-      }
-      if (parseStatus.status === "completed") {
-        parseDone = true;
-        break;
-      }
-      await sleep(1000);
-    }
-    if (!parseDone) throw new Error("Парсинг не завершился вовремя. Проверьте статус и попробуйте снова.");
+    await waitJobStatus(`/requests/${rid}/parsing/status`, {
+      maxSeconds: 360,
+      label: "Парсинг",
+      trackOcr: true,
+      formatBox: (parseStatus) => {
+        const ocrLine = parseStatus.ocr_active ? "\nOCR: идёт распознавание скана…" : "";
+        $("statusBox").textContent =
+          `Парсинг: ${parseStatus.status}\nИзвлечено: ${parseStatus.parsed_items || 0}${ocrLine}`;
+        const meta = parseStatus.ocr_active
+          ? `Парсинг: OCR (${formatDuration(parseStatus.ocr_elapsed_sec ?? 0)})`
+          : `Парсинг: ${parseStatus.status}`;
+        setProgress(
+          parseStatus.ocr_active ? 28 : 20 + Math.round((parseStatus.progress || 0) * 0.45),
+          meta
+        );
+      },
+    });
 
     setStage("matching", "Сопоставление запущено...");
     await api(`/requests/${rid}/matching/start`, {
@@ -221,20 +322,16 @@ async function processAll() {
       body: JSON.stringify({ strategy: "default", auto_approve_threshold: 0.72 }),
     });
 
-    let matchDone = false;
-    for (let i = 0; i < 30; i++) {
-      const matchStatus = await api(`/requests/${rid}/matching/status`);
-      $("statusBox").textContent =
-        `Парсинг: completed\nСопоставление: ${matchStatus.status}\n` +
-        `Автоподбор: ${matchStatus.auto_matched || 0}, Требует проверки: ${matchStatus.needs_review || 0}`;
-      setProgress(60 + Math.round((matchStatus.progress || 0) * 0.4), `Сопоставление: ${matchStatus.status}`);
-      if (matchStatus.status === "completed") {
-        matchDone = true;
-        break;
-      }
-      await sleep(1000);
-    }
-    if (!matchDone) throw new Error("Сопоставление не завершилось вовремя. Проверьте статус и попробуйте снова.");
+    await waitJobStatus(`/requests/${rid}/matching/status`, {
+      maxSeconds: 180,
+      label: "Сопоставление",
+      formatBox: (matchStatus) => {
+        $("statusBox").textContent =
+          `Парсинг: completed\nСопоставление: ${matchStatus.status}\n` +
+          `Автоподбор: ${matchStatus.auto_matched || 0}, Требует проверки: ${matchStatus.needs_review || 0}`;
+        setProgress(60 + Math.round((matchStatus.progress || 0) * 0.4), `Сопоставление: ${matchStatus.status}`);
+      },
+    });
 
     await loadResults();
     await loadSavedRequests();
@@ -242,6 +339,7 @@ async function processAll() {
     setStage("error", `Ошибка: ${e.message || "неизвестно"}`);
     alert(e.message || "Ошибка обработки");
   } finally {
+    hideOcrTimingModal();
     setProcessingButtons(false);
   }
 }

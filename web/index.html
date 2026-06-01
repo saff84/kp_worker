@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Parser KP</title>
-  <link rel="stylesheet" href="/styles.css?v=9" />
+  <link rel="stylesheet" href="/styles.css?v=10" />
 </head>
 <body>
   <header>
@@ -197,6 +197,26 @@
     </section>
   </main>
 
+  <div id="ocrTimingModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="ocrTimingTitle">
+    <div class="modal-content ocr-timing-content">
+      <div class="modal-header">
+        <h3 id="ocrTimingTitle">Распознавание скана (OCR)</h3>
+      </div>
+      <p class="ocr-timing-lead">
+        PDF без текстового слоя — извлекаем таблицу позиций. Не закрывайте вкладку.
+      </p>
+      <div class="ocr-timer-block">
+        <span class="ocr-timer-label">Время OCR</span>
+        <div id="ocrTimerDisplay" class="ocr-timer-value">00:00</div>
+      </div>
+      <p id="ocrTimerHint" class="hint ocr-timer-hint">Обычно 1–5 минут в зависимости от числа страниц.</p>
+      <div class="ocr-timing-bar-wrap">
+        <div id="ocrTimingBar" class="ocr-timing-bar"></div>
+      </div>
+      <p id="ocrTimerMeta" class="hint">Статус: ожидание…</p>
+    </div>
+  </div>
+
   <div id="manualSearchModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="manualSearchTitle">
     <div class="modal-content">
       <div class="modal-header">
@@ -212,6 +232,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=10"></script>
+  <script src="/app.js?v=12"></script>
 </body>
 </html>

@@ -320,6 +320,56 @@ pre {
   border: 1px solid #c7d2fe;
 }
 
+.ocr-timing-content {
+  width: min(420px, 92vw);
+  text-align: center;
+}
+.ocr-timing-lead {
+  margin: 0 0 14px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.ocr-timer-block {
+  margin: 0 auto 10px;
+  padding: 16px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  border: 1px solid #93c5fd;
+}
+.ocr-timer-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #1d4ed8;
+  margin-bottom: 6px;
+}
+.ocr-timer-value {
+  font-size: 42px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  line-height: 1;
+}
+.ocr-timer-hint {
+  margin: 0 0 12px;
+}
+.ocr-timing-bar-wrap {
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.ocr-timing-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  transition: width 1s linear;
+}
+
 @media (max-width: 1200px) {
   .layout-row {
     grid-template-columns: 1fr;

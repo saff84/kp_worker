@@ -805,22 +805,54 @@ async function checkMatchingForOcrRequest() {
   const requestId = ($("ocrCalRequestId").value || "").trim();
   if (!requestId) return alert("Введите ID заявки");
   $("activeRequestId").value = requestId;
-  $("adminImportReport").textContent = "Проверка матчинга: запуск парсинга...";
-  await api(`/requests/${requestId}/parsing/start`, {
-    method: "POST",
-    body: JSON.stringify({ force_reparse: true }),
-  });
-  const parseResult = await waitJobStatus(`/requests/${requestId}/parsing/status`, {
-    maxSeconds: 1800,
-    label: "Парсинг",
-    trackOcr: true,
-    returnLastStatusOnTimeout: true,
-    formatBox: (st) => {
+  $("adminImportReport").textContent = "Проверка матчинга: проверяю статус парсинга...";
+  let parseStatus = null;
+  try {
+    parseStatus = await api(`/requests/${requestId}/parsing/status`);
+  } catch (e) {
+    throw new Error(e?.error?.message || e?.message || "Не удалось получить статус парсинга");
+  }
+
+  let parseResult = parseStatus;
+  if (parseStatus?.status === "completed") {
+    $("adminImportReport").textContent =
+      `Проверка матчинга\nПарсинг уже завершен.\nИзвлечено: ${parseStatus.parsed_items || 0}`;
+  } else {
+    if (parseStatus?.status === "not_started" || parseStatus?.status === "failed" || parseStatus?.status === "cancelled") {
+      $("adminImportReport").textContent = "Проверка матчинга: запуск парсинга...";
+      try {
+        await api(`/requests/${requestId}/parsing/start`, {
+          method: "POST",
+          // Для проверки матчинга не форсируем переразбор, если он уже есть.
+          body: JSON.stringify({ force_reparse: false }),
+        });
+      } catch (e) {
+        const code = e?.error?.code || e?.code || "";
+        const message = String(e?.error?.message || e?.message || "").toLowerCase();
+        const alreadyRunning = code === "parsing_already_running" || message.includes("already running");
+        if (!alreadyRunning) {
+          throw new Error(e?.error?.message || e?.message || "Не удалось запустить парсинг");
+        }
+      }
+    } else {
       $("adminImportReport").textContent =
-        `Проверка матчинга\nПарсинг: ${st.status}\nИзвлечено: ${st.parsed_items || 0}` +
-        (st.ocr_active ? `\nOCR: ${formatDuration(st.ocr_elapsed_sec ?? 0)}` : "");
-    },
-  });
+        `Проверка матчинга\nПарсинг уже выполняется для заявки ${requestId}.\n` +
+        `Подключаюсь к текущему процессу...`;
+    }
+
+    parseResult = await waitJobStatus(`/requests/${requestId}/parsing/status`, {
+      maxSeconds: 1800,
+      label: "Парсинг",
+      trackOcr: true,
+      returnLastStatusOnTimeout: true,
+      formatBox: (st) => {
+        $("adminImportReport").textContent =
+          `Проверка матчинга\nПарсинг: ${st.status}\nИзвлечено: ${st.parsed_items || 0}` +
+          (st.ocr_active ? `\nOCR: ${formatDuration(st.ocr_elapsed_sec ?? 0)}` : "");
+      },
+    });
+  }
+
   if (!parseResult || parseResult.status !== "completed") {
     $("adminImportReport").textContent =
       `Проверка матчинга: парсинг ещё выполняется.\n` +
@@ -831,11 +863,33 @@ async function checkMatchingForOcrRequest() {
     return;
   }
 
-  $("adminImportReport").textContent = "Проверка матчинга: запуск сопоставления...";
-  await api(`/requests/${requestId}/matching/start`, {
-    method: "POST",
-    body: JSON.stringify({ strategy: "default", auto_approve_threshold: 0.72 }),
-  });
+  let matchStatus = null;
+  try {
+    matchStatus = await api(`/requests/${requestId}/matching/status`);
+  } catch (e) {
+    throw new Error(e?.error?.message || e?.message || "Не удалось получить статус сопоставления");
+  }
+
+  if (matchStatus?.status !== "running" && matchStatus?.status !== "queued") {
+    $("adminImportReport").textContent = "Проверка матчинга: запуск сопоставления...";
+    try {
+      await api(`/requests/${requestId}/matching/start`, {
+        method: "POST",
+        body: JSON.stringify({ strategy: "default", auto_approve_threshold: 0.72 }),
+      });
+    } catch (e) {
+      const code = e?.error?.code || e?.code || "";
+      const message = String(e?.error?.message || e?.message || "").toLowerCase();
+      const alreadyRunning = code === "matching_already_running" || message.includes("already running");
+      if (!alreadyRunning) {
+        throw new Error(e?.error?.message || e?.message || "Не удалось запустить сопоставление");
+      }
+    }
+  } else {
+    $("adminImportReport").textContent =
+      `Проверка матчинга\nСопоставление уже выполняется для заявки ${requestId}.\n` +
+      `Подключаюсь к текущему процессу...`;
+  }
   await waitJobStatus(`/requests/${requestId}/matching/status`, {
     maxSeconds: 240,
     label: "Сопоставление",
@@ -970,7 +1024,9 @@ $("ocrCheckMatchingBtn")?.addEventListener("click", async () => {
   try {
     await checkMatchingForOcrRequest();
   } catch (e) {
-    alert(e?.error?.message || e?.message || "Не удалось выполнить проверку матчинга");
+    const msg = e?.error?.message || e?.message || "Не удалось выполнить проверку матчинга";
+    $("adminImportReport").textContent = `Проверка матчинга: ошибка\n${msg}`;
+    alert(msg);
   } finally {
     if (btn) btn.disabled = false;
   }

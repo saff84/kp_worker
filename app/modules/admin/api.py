@@ -1,5 +1,7 @@
 import csv
 import io
+import base64
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -12,7 +14,8 @@ from app.api.deps import require_admin
 from app.core.config import settings
 from app.core.errors import error_payload
 from app.db.session import get_db
-from app.models import AnalogMapping, CompetitorMapping, ImportReport, MatchingRule, ProductCatalog, ProductCategory, User
+from app.models import AnalogMapping, CompetitorMapping, ImportReport, MatchingRule, ProductCatalog, ProductCategory, RequestItem, UploadedFile as UploadedFileModel, User
+from app.services.ocr_calibration import load_ocr_calibration, save_ocr_calibration
 from app.services.catalog_match_rules import (
     add_catalog_match_rule,
     delete_catalog_match_rule,
@@ -72,6 +75,102 @@ class CatalogMatchRuleIn(BaseModel):
     when_all: list[str] = Field(default_factory=list)
     require_any: list[str] = Field(default_factory=list)
 
+
+class OcrCalibrationIn(BaseModel):
+    name_col: list[float] = Field(default_factory=lambda: [0.06, 0.47], min_length=2, max_length=2)
+    qty_col: list[float] = Field(default_factory=lambda: [0.72, 0.84], min_length=2, max_length=2)
+    table_y: list[float] = Field(default_factory=lambda: [0.08, 0.94], min_length=2, max_length=2)
+
+
+def _latest_uploaded_pdf_path(db: Session, request_id: str) -> Path:
+    req = db.get(RequestItem, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=error_payload("request_not_found", "Request not found"))
+    latest = db.scalar(
+        select(UploadedFileModel).where(UploadedFileModel.request_id == request_id).order_by(UploadedFileModel.created_at.desc())
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail=error_payload("file_not_found", "No uploaded file for request"))
+    path = Path(latest.storage_key)
+    if path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail=error_payload("unsupported_file_type", "Only PDF preview is supported"))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=error_payload("file_not_found", "Uploaded file not found on disk"))
+    return path
+
+
+def _pdf_meta(path: Path) -> tuple[int, int, int]:
+    try:
+        import fitz  # pymupdf
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=error_payload("ocr_preview_unavailable", "PyMuPDF is not available")) from exc
+    doc = fitz.open(str(path))
+    try:
+        if len(doc) == 0:
+            return (0, 0, 0)
+        page = doc[0]
+        rect = page.rect
+        return (len(doc), int(rect.width), int(rect.height))
+    finally:
+        doc.close()
+
+
+@router.get("/ocr-calibration")
+def get_ocr_calibration(admin: User = Depends(require_admin)):
+    return load_ocr_calibration()
+
+
+@router.put("/ocr-calibration")
+def put_ocr_calibration(payload: OcrCalibrationIn, admin: User = Depends(require_admin)):
+    return save_ocr_calibration(payload.model_dump())
+
+
+@router.get("/ocr-calibration/request/{request_id}")
+def get_ocr_calibration_request_meta(request_id: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    path = _latest_uploaded_pdf_path(db, request_id)
+    page_count, width, height = _pdf_meta(path)
+    return {
+        "request_id": request_id,
+        "storage_key": str(path).replace("\\", "/"),
+        "page_count": page_count,
+        "page_width": width,
+        "page_height": height,
+    }
+
+
+@router.get("/ocr-calibration/preview/{request_id}")
+def get_ocr_calibration_preview(
+    request_id: str,
+    page: int = 1,
+    scale: float = 1.2,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    path = _latest_uploaded_pdf_path(db, request_id)
+    try:
+        import fitz  # pymupdf
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=error_payload("ocr_preview_unavailable", "PyMuPDF is not available")) from exc
+    doc = fitz.open(str(path))
+    try:
+        total = len(doc)
+        if total == 0:
+            raise HTTPException(status_code=400, detail=error_payload("empty_pdf", "PDF has no pages"))
+        page_idx = min(max(page - 1, 0), total - 1)
+        matrix_scale = min(max(scale, 0.7), 2.2)
+        pix = doc[page_idx].get_pixmap(matrix=fitz.Matrix(matrix_scale, matrix_scale), alpha=False)
+        png_bytes = pix.tobytes("png")
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        return {
+            "request_id": request_id,
+            "page": page_idx + 1,
+            "page_count": total,
+            "image_width": pix.width,
+            "image_height": pix.height,
+            "image_data_url": f"data:image/png;base64,{b64}",
+        }
+    finally:
+        doc.close()
 
 def _store_import_report(
     db: Session,

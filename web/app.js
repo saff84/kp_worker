@@ -4,6 +4,8 @@ let currentResults = [];
 let currentStage = "idle";
 let manualTargetParsedId = null;
 let editingCatalogRuleId = null;
+let ocrPreviewPage = 1;
+let ocrPreviewTotal = 1;
 
 const $ = (id) => document.getElementById(id);
 const STATUS_RU = {
@@ -167,11 +169,13 @@ function switchAdminTab(tab) {
     catalog: $("adminTabCatalog"),
     competitors: $("adminTabCompetitors"),
     stopWords: $("adminTabStopWords"),
+    ocr: $("adminTabOcr"),
   };
   const panels = {
     catalog: $("adminPanelCatalog"),
     competitors: $("adminPanelCompetitors"),
     stopWords: $("adminPanelStopWords"),
+    ocr: $("adminPanelOcr"),
   };
   Object.entries(tabs).forEach(([name, btn]) => {
     if (!btn) return;
@@ -225,6 +229,7 @@ $("loginForm").addEventListener("submit", async (e) => {
       switchAdminTab("catalog");
       $("loadStopWordsBtn")?.click();
       $("loadCatalogRulesBtn")?.click();
+      loadOcrCalibration();
     } else {
       $("adminQuickSection").classList.add("hidden");
     }
@@ -662,6 +667,102 @@ async function loadCatalogRules() {
   }
 }
 
+function getOcrCalibrationFromUi() {
+  return {
+    name_col: [Number($("ocrNameX1").value), Number($("ocrNameX2").value)],
+    qty_col: [Number($("ocrQtyX1").value), Number($("ocrQtyX2").value)],
+    table_y: [Number($("ocrY1").value), Number($("ocrY2").value)],
+  };
+}
+
+function clampPair(pair, fallback) {
+  const left = Number.isFinite(pair?.[0]) ? pair[0] : fallback[0];
+  const right = Number.isFinite(pair?.[1]) ? pair[1] : fallback[1];
+  const a = Math.max(0, Math.min(1, left));
+  const b = Math.max(0, Math.min(1, right));
+  if (b <= a) return fallback;
+  return [a, b];
+}
+
+function applyOcrCalibrationToUi(cal) {
+  const name = clampPair(cal?.name_col, [0.06, 0.47]);
+  const qty = clampPair(cal?.qty_col, [0.72, 0.84]);
+  const y = clampPair(cal?.table_y, [0.08, 0.94]);
+  $("ocrNameX1").value = String(name[0]);
+  $("ocrNameX2").value = String(name[1]);
+  $("ocrQtyX1").value = String(qty[0]);
+  $("ocrQtyX2").value = String(qty[1]);
+  $("ocrY1").value = String(y[0]);
+  $("ocrY2").value = String(y[1]);
+  renderOcrOverlay();
+}
+
+function renderOcrOverlay() {
+  const img = $("ocrPreviewImage");
+  const nameOverlay = $("ocrNameOverlay");
+  const qtyOverlay = $("ocrQtyOverlay");
+  if (!img || img.classList.contains("hidden")) return;
+  const data = getOcrCalibrationFromUi();
+  const name = clampPair(data.name_col, [0.06, 0.47]);
+  const qty = clampPair(data.qty_col, [0.72, 0.84]);
+  const y = clampPair(data.table_y, [0.08, 0.94]);
+  const toPct = (v) => `${(v * 100).toFixed(2)}%`;
+  [nameOverlay, qtyOverlay].forEach((x) => x.classList.remove("hidden"));
+
+  nameOverlay.style.left = toPct(name[0]);
+  nameOverlay.style.width = toPct(name[1] - name[0]);
+  nameOverlay.style.top = toPct(y[0]);
+  nameOverlay.style.height = toPct(y[1] - y[0]);
+
+  qtyOverlay.style.left = toPct(qty[0]);
+  qtyOverlay.style.width = toPct(qty[1] - qty[0]);
+  qtyOverlay.style.top = toPct(y[0]);
+  qtyOverlay.style.height = toPct(y[1] - y[0]);
+
+  $("ocrCalibrationDebug").textContent = JSON.stringify(data, null, 2);
+}
+
+async function loadOcrCalibration() {
+  try {
+    const cal = await api("/admin/ocr-calibration");
+    applyOcrCalibrationToUi(cal);
+  } catch (e) {
+    $("adminImportReport").textContent = `OCR calibration load error: ${JSON.stringify(e, null, 2)}`;
+  }
+}
+
+async function loadOcrPreview(page) {
+  const requestId = ($("ocrCalRequestId").value || "").trim();
+  if (!requestId) return alert("Введите ID заявки");
+  const safePage = Math.max(1, page || 1);
+  const meta = await api(`/admin/ocr-calibration/request/${requestId}`);
+  const normalizedPage = Math.min(safePage, Math.max(1, meta.page_count || 1));
+  const preview = await api(`/admin/ocr-calibration/preview/${requestId}?page=${normalizedPage}`);
+  ocrPreviewPage = preview.page || normalizedPage;
+  ocrPreviewTotal = preview.page_count || meta.page_count || 1;
+  $("ocrPageInput").value = String(ocrPreviewPage);
+  $("ocrPageMeta").textContent = `Страница: ${ocrPreviewPage} / ${ocrPreviewTotal}`;
+  const img = $("ocrPreviewImage");
+  img.src = preview.image_data_url;
+  img.classList.remove("hidden");
+  img.onload = () => renderOcrOverlay();
+  renderOcrOverlay();
+}
+
+async function saveOcrCalibration() {
+  const payload = getOcrCalibrationFromUi();
+  if (payload.name_col[1] <= payload.name_col[0] || payload.qty_col[1] <= payload.qty_col[0] || payload.table_y[1] <= payload.table_y[0]) {
+    return alert("Проверьте диапазоны: правая граница должна быть больше левой.");
+  }
+  const data = await api("/admin/ocr-calibration", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  applyOcrCalibrationToUi(data);
+  $("adminImportReport").textContent = `OCR calibration saved:\n${JSON.stringify(data, null, 2)}`;
+  alert("Калибровка OCR сохранена");
+}
+
 $("importCatalogBtn").addEventListener("click", async () => {
   await uploadAdminFile("/admin/catalog/import", "catalogImportFile");
 });
@@ -707,6 +808,61 @@ $("manualSearchQuery")?.addEventListener("keydown", (e) => {
 $("adminTabCatalog")?.addEventListener("click", () => switchAdminTab("catalog"));
 $("adminTabCompetitors")?.addEventListener("click", () => switchAdminTab("competitors"));
 $("adminTabStopWords")?.addEventListener("click", () => switchAdminTab("stopWords"));
+$("adminTabOcr")?.addEventListener("click", () => switchAdminTab("ocr"));
+
+$("ocrLoadPreviewBtn")?.addEventListener("click", async () => {
+  try {
+    const page = Number($("ocrPageInput").value || "1");
+    await loadOcrPreview(page);
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось загрузить OCR предпросмотр");
+  }
+});
+
+$("ocrPrevPageBtn")?.addEventListener("click", async () => {
+  try {
+    await loadOcrPreview(Math.max(1, ocrPreviewPage - 1));
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось открыть страницу");
+  }
+});
+
+$("ocrNextPageBtn")?.addEventListener("click", async () => {
+  try {
+    await loadOcrPreview(Math.min(ocrPreviewTotal, ocrPreviewPage + 1));
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось открыть страницу");
+  }
+});
+
+$("ocrPageInput")?.addEventListener("change", async () => {
+  try {
+    const page = Number($("ocrPageInput").value || "1");
+    await loadOcrPreview(page);
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось открыть страницу");
+  }
+});
+
+["ocrNameX1", "ocrNameX2", "ocrQtyX1", "ocrQtyX2", "ocrY1", "ocrY2"].forEach((id) => {
+  $(id)?.addEventListener("input", renderOcrOverlay);
+});
+
+$("ocrSaveCalibrationBtn")?.addEventListener("click", async () => {
+  try {
+    await saveOcrCalibration();
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось сохранить OCR калибровку");
+  }
+});
+
+$("ocrResetDefaultsBtn")?.addEventListener("click", () => {
+  applyOcrCalibrationToUi({
+    name_col: [0.06, 0.47],
+    qty_col: [0.72, 0.84],
+    table_y: [0.08, 0.94],
+  });
+});
 
 $("loadStopWordsBtn")?.addEventListener("click", async () => {
   try {

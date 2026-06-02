@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Parser KP</title>
-  <link rel="stylesheet" href="/styles.css?v=10" />
+  <link rel="stylesheet" href="/styles.css?v=11" />
 </head>
 <body>
   <header>
@@ -123,6 +123,7 @@
           <button id="adminTabCatalog" class="active">Каталог</button>
           <button id="adminTabCompetitors">Соответствия конкурентов</button>
           <button id="adminTabStopWords">Стоп-слова</button>
+          <button id="adminTabOcr">OCR калибровка</button>
         </div>
         <div id="adminPanelCatalog" class="admin-panel">
           <div class="row">
@@ -191,6 +192,58 @@
             <button id="saveStopWordsBtn">Сохранить список</button>
           </div>
         </div>
+        <div id="adminPanelOcr" class="admin-panel hidden">
+          <div class="admin-info">
+            <b>Калибровка OCR по многостраничному PDF:</b>
+            <br />
+            1) Введите ID заявки с загруженным PDF, 2) загрузите предпросмотр страницы, 3) двигайте рамки колонки
+            <code>Наименование</code> и <code>Количество</code>, 4) сохраните настройки.
+          </div>
+          <div class="row">
+            <input id="ocrCalRequestId" placeholder="ID заявки с PDF" />
+            <button id="ocrLoadPreviewBtn" type="button">Загрузить страницу</button>
+          </div>
+          <div class="row">
+            <button id="ocrPrevPageBtn" class="ghost-btn" type="button">← Страница</button>
+            <input id="ocrPageInput" type="number" min="1" value="1" style="max-width:120px" />
+            <button id="ocrNextPageBtn" class="ghost-btn" type="button">Страница →</button>
+            <span id="ocrPageMeta" class="hint">Страница: - / -</span>
+          </div>
+          <div class="ocr-calibration-layout">
+            <div class="ocr-preview-wrap">
+              <div class="ocr-preview-canvas">
+                <img id="ocrPreviewImage" class="hidden" alt="OCR preview page" />
+                <div id="ocrNameOverlay" class="ocr-overlay name hidden"></div>
+                <div id="ocrQtyOverlay" class="ocr-overlay qty hidden"></div>
+              </div>
+            </div>
+            <div class="ocr-controls">
+              <label>Наименование X1
+                <input id="ocrNameX1" type="range" min="0" max="0.95" step="0.005" />
+              </label>
+              <label>Наименование X2
+                <input id="ocrNameX2" type="range" min="0.05" max="1" step="0.005" />
+              </label>
+              <label>Количество X1
+                <input id="ocrQtyX1" type="range" min="0" max="0.95" step="0.005" />
+              </label>
+              <label>Количество X2
+                <input id="ocrQtyX2" type="range" min="0.05" max="1" step="0.005" />
+              </label>
+              <label>Таблица Y1
+                <input id="ocrY1" type="range" min="0" max="0.95" step="0.005" />
+              </label>
+              <label>Таблица Y2
+                <input id="ocrY2" type="range" min="0.05" max="1" step="0.005" />
+              </label>
+              <div class="row">
+                <button id="ocrResetDefaultsBtn" class="ghost-btn" type="button">Сбросить</button>
+                <button id="ocrSaveCalibrationBtn" type="button">Сохранить калибровку</button>
+              </div>
+              <pre id="ocrCalibrationDebug" class="hint"></pre>
+            </div>
+          </div>
+        </div>
         <div id="adminImportViz" class="admin-import-viz hidden"></div>
         <pre id="adminImportReport"></pre>
       </section>
@@ -232,6 +285,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>

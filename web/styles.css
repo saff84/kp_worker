@@ -370,6 +370,67 @@ pre {
   transition: width 1s linear;
 }
 
+.ocr-calibration-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(280px, 360px);
+  gap: 12px;
+  margin-top: 12px;
+}
+.ocr-preview-wrap {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+.ocr-preview-canvas {
+  position: relative;
+  width: 100%;
+  min-height: 240px;
+  overflow: auto;
+  background: #f8fafc;
+}
+#ocrPreviewImage {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.ocr-overlay {
+  position: absolute;
+  border: 2px solid;
+  background: rgba(0, 0, 0, 0.05);
+  pointer-events: none;
+}
+.ocr-overlay.name {
+  border-color: #16a34a;
+  background: rgba(34, 197, 94, 0.12);
+}
+.ocr-overlay.qty {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.14);
+}
+.ocr-controls {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+}
+.ocr-controls label {
+  display: block;
+  font-size: 13px;
+  color: #334155;
+  margin-bottom: 8px;
+}
+.ocr-controls input[type="range"] {
+  width: 100%;
+}
+#ocrCalibrationDebug {
+  white-space: pre-wrap;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 8px;
+}
+
 @media (max-width: 1200px) {
   .layout-row {
     grid-template-columns: 1fr;
@@ -379,6 +440,9 @@ pre {
   }
   #resultsTable {
     table-layout: auto;
+  }
+  .ocr-calibration-layout {
+    grid-template-columns: 1fr;
   }
 }
 

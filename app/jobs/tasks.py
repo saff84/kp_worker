@@ -21,6 +21,7 @@ from app.models import ApprovedMatch, ExportFile, MatchResult, ParsedItem, Produ
 from app.services.catalog_match_rules import apply_catalog_rule_filter, list_catalog_match_rules
 from app.services.hybrid_search import ensure_catalog_index, vector_search
 from app.services.stop_words import load_stop_words
+from app.services.ocr_calibration import load_ocr_calibration
 from app.services.storage import export_path
 from app.jobs.parse_progress import set_parse_phase
 
@@ -425,9 +426,123 @@ def _parse_text_lines_to_rows(text_lines: list[str]) -> list[dict]:
                     "quantity": cols[3],
                 }
             )
-        elif _looks_like_position(line):
+        else:
+            # OCR from selected columns often yields "Наименование ... 26".
+            m_short = re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*$", line)
+            if m_short and _looks_like_position(m_short.group(1)):
+                lines.append({"name": m_short.group(1).strip(), "quantity": m_short.group(2).replace(",", ".")})
+                continue
+        if _looks_like_position(line):
             lines.append({"name": line})
     return _filter_position_rows(lines)
+
+
+def _parse_ratio_range(value: str, default: tuple[float, float]) -> tuple[float, float]:
+    try:
+        left_raw, right_raw = [x.strip() for x in value.split(",", 1)]
+        left = float(left_raw)
+        right = float(right_raw)
+    except Exception:
+        return default
+    left = max(0.0, min(1.0, left))
+    right = max(0.0, min(1.0, right))
+    if right <= left:
+        return default
+    return (left, right)
+
+
+def _ocr_ranges() -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    cfg = load_ocr_calibration()
+    name_col = _parse_ratio_range(",".join(str(x) for x in cfg.get("name_col", [])), (0.06, 0.47))
+    qty_col = _parse_ratio_range(",".join(str(x) for x in cfg.get("qty_col", [])), (0.72, 0.84))
+    y_band = _parse_ratio_range(",".join(str(x) for x in cfg.get("table_y", [])), (0.08, 0.94))
+    return name_col, qty_col, y_band
+
+
+def _ocr_line_map_from_crop(
+    img: Image.Image,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    *,
+    numeric_only: bool = False,
+) -> list[tuple[float, str]]:
+    width, height = img.size
+    x0 = int(width * x_range[0])
+    x1 = int(width * x_range[1])
+    y0 = int(height * y_range[0])
+    y1 = int(height * y_range[1])
+    if x1 <= x0 or y1 <= y0:
+        return []
+    crop = img.crop((x0, y0, x1, y1))
+    data = pytesseract.image_to_data(
+        crop,
+        lang="rus+eng",
+        config="--psm 6",
+        output_type=pytesseract.Output.DICT,
+    )
+    words: list[tuple[int, int, int, str]] = []
+    total = len(data.get("text", []))
+    for idx in range(total):
+        text = str(data["text"][idx] or "").strip()
+        if not text:
+            continue
+        try:
+            conf = float(data["conf"][idx])
+        except Exception:
+            conf = -1.0
+        if conf < 20:
+            continue
+        lx = int(data["left"][idx])
+        ty = int(data["top"][idx])
+        h = int(data["height"][idx] or 0)
+        words.append((lx, ty + max(1, h // 2), max(1, h), text))
+    if not words:
+        return []
+    avg_h = max(10, int(sum(w[2] for w in words) / len(words)))
+    band = max(8, int(avg_h * 0.8))
+    grouped: dict[int, list[tuple[int, str]]] = {}
+    y_center_map: dict[int, float] = {}
+    for lx, y_center, _, text in words:
+        key = y_center // band
+        grouped.setdefault(key, []).append((lx, text))
+        y_center_map[key] = y_center_map.get(key, 0.0) + y_center
+    lines: list[tuple[float, str]] = []
+    for key in sorted(grouped.keys()):
+        tokens = sorted(grouped[key], key=lambda item: item[0])
+        text = " ".join(tok for _, tok in tokens).strip()
+        if not text:
+            continue
+        if numeric_only and not re.search(r"\d", text):
+            continue
+        y_avg = y_center_map[key] / max(1, len(tokens))
+        lines.append((float(y_avg + y0), text))
+    return lines
+
+
+def _merge_name_qty_lines(name_lines: list[tuple[float, str]], qty_lines: list[tuple[float, str]]) -> list[str]:
+    if not name_lines:
+        return []
+    if not qty_lines:
+        return [name for _, name in name_lines if _looks_like_position(name)]
+    qty_pos = 0
+    merged: list[str] = []
+    for y_name, name in name_lines:
+        if not _looks_like_position(name):
+            continue
+        while qty_pos + 1 < len(qty_lines):
+            cur_dist = abs(qty_lines[qty_pos][0] - y_name)
+            next_dist = abs(qty_lines[qty_pos + 1][0] - y_name)
+            if next_dist <= cur_dist:
+                qty_pos += 1
+            else:
+                break
+        qty_text = qty_lines[qty_pos][1]
+        qty_match = re.search(r"\d+(?:[.,]\d+)?", qty_text)
+        if qty_match:
+            merged.append(f"{name} {qty_match.group(0)}")
+        else:
+            merged.append(name)
+    return merged
 
 
 def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
@@ -435,6 +550,7 @@ def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
         import fitz  # pymupdf
     except ImportError:
         return []
+    name_col, qty_col, y_band = _ocr_ranges()
     out: list[str] = []
     doc = None
     try:
@@ -448,6 +564,12 @@ def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
             try:
                 pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                name_lines = _ocr_line_map_from_crop(img, name_col, y_band, numeric_only=False)
+                qty_lines = _ocr_line_map_from_crop(img, qty_col, y_band, numeric_only=True)
+                merged = _merge_name_qty_lines(name_lines, qty_lines)
+                if merged:
+                    out.extend(merged)
+                    continue
                 ocr = pytesseract.image_to_string(img, lang="rus+eng", config="--psm 6")
                 out.extend(ln.strip() for ln in ocr.splitlines() if ln.strip())
             except Exception:

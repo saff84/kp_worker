@@ -59,6 +59,7 @@
         <div class="row">
           <input id="activeRequestId" placeholder="ID заявки" />
           <button id="processAllBtn">Обработать КП</button>
+          <button id="cancelProcessingBtn" class="ghost-btn" type="button">Отменить обработку</button>
           <button id="loadResults">Обновить результат</button>
           <button id="createExport">Экспорт результата</button>
         </div>
@@ -268,6 +269,9 @@
         <div id="ocrTimingBar" class="ocr-timing-bar"></div>
       </div>
       <p id="ocrTimerMeta" class="hint">Статус: ожидание…</p>
+      <div class="row" style="justify-content:center; margin-top:8px;">
+        <button id="cancelOcrBtn" class="ghost-btn" type="button">Отменить OCR/матчинг</button>
+      </div>
     </div>
   </div>
 
@@ -286,6 +290,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=14"></script>
+  <script src="/app.js?v=16"></script>
 </body>
 </html>

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.errors import error_payload
 from app.db.session import get_db
-from app.jobs.parse_progress import get_parse_progress
+from app.jobs.parse_progress import clear_parse_cancel, get_parse_progress, request_parse_cancel
 from app.jobs.queue import PARSE_JOB_TIMEOUT_SEC, queue
 from app.jobs.tasks import parsing_task
 from app.models import RequestItem, User
@@ -31,6 +31,7 @@ def start_parsing(request_id: str, payload: ParseStart, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail=error_payload("request_not_found", "Request not found"))
     if req.parse_status == "running" and not (payload.force_reparse or _is_stale_running(req.updated_at)):
         raise HTTPException(status_code=400, detail=error_payload("parsing_already_running", "Parsing already running"))
+    clear_parse_cancel(request_id)
     req.parse_status = "queued"
     req.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -40,6 +41,20 @@ def start_parsing(request_id: str, payload: ParseStart, db: Session = Depends(ge
     except Exception:
         parsing_task(request_id)
         return {"request_id": request_id, "job_id": None, "status": "completed_sync"}
+
+
+@router.post("/cancel")
+def cancel_parsing(request_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    req = db.get(RequestItem, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=error_payload("request_not_found", "Request not found"))
+    request_parse_cancel(request_id)
+    if req.parse_status in {"queued", "running"}:
+        req.parse_status = "cancelled"
+        req.status = "uploaded"
+        req.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"request_id": request_id, "status": req.parse_status, "cancel_requested": True}
 
 
 @router.get("/status")
@@ -56,13 +71,15 @@ def parsing_status(request_id: str, db: Session = Depends(get_db), current: User
             "Часто это скан PDF без текстового слоя — нужен Tesseract в контейнере worker. "
             "Попробуйте XLSX/CSV или вставьте позиции текстом."
         )
+    elif req.parse_status == "cancelled":
+        error = "Парсинг отменен пользователем."
     return {
         "request_id": request_id,
         "status": req.parse_status,
         "progress": progress,
         "parsed_items": req.total_items,
         "started_at": req.updated_at.isoformat(),
-        "finished_at": req.updated_at.isoformat() if req.parse_status in {"completed", "failed"} else None,
+        "finished_at": req.updated_at.isoformat() if req.parse_status in {"completed", "failed", "cancelled"} else None,
         "error": error,
         "phase": ocr_info.get("phase"),
         "ocr_active": bool(ocr_info.get("ocr_active")),

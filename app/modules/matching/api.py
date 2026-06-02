@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -5,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.errors import error_payload
 from app.db.session import get_db
+from app.jobs.parse_progress import clear_match_cancel, request_match_cancel
 from app.jobs.queue import MATCH_JOB_TIMEOUT_SEC, queue
 from app.jobs.tasks import matching_task
 from app.models import RequestItem, User
@@ -26,6 +29,7 @@ def start_matching(request_id: str, payload: MatchStart, db: Session = Depends(g
         raise HTTPException(status_code=400, detail=error_payload("parsing_not_completed", "Parsing must be completed first"))
     if req.match_status == "running":
         raise HTTPException(status_code=400, detail=error_payload("matching_already_running", "Matching already running"))
+    clear_match_cancel(request_id)
     req.match_status = "queued"
     db.commit()
     try:
@@ -39,6 +43,19 @@ def start_matching(request_id: str, payload: MatchStart, db: Session = Depends(g
     except Exception:
         matching_task(request_id, payload.auto_approve_threshold)
         return {"request_id": request_id, "job_id": None, "status": "completed_sync"}
+
+
+@router.post("/cancel")
+def cancel_matching(request_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    req = db.get(RequestItem, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail=error_payload("request_not_found", "Request not found"))
+    request_match_cancel(request_id)
+    if req.match_status in {"queued", "running"}:
+        req.match_status = "cancelled"
+        req.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"request_id": request_id, "status": req.match_status, "cancel_requested": True}
 
 
 @router.get("/status")
@@ -55,6 +72,6 @@ def matching_status(request_id: str, db: Session = Depends(get_db), current: Use
         "auto_matched": req.matched_items,
         "needs_review": req.needs_review_items,
         "started_at": req.updated_at.isoformat(),
-        "finished_at": req.updated_at.isoformat() if req.match_status == "completed" else None,
-        "error": None,
+        "finished_at": req.updated_at.isoformat() if req.match_status in {"completed", "cancelled"} else None,
+        "error": "Сопоставление отменено пользователем." if req.match_status == "cancelled" else None,
     }

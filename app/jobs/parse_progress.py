@@ -13,6 +13,14 @@ def _ocr_since_key(request_id: str) -> str:
     return f"parse:ocr_since:{request_id}"
 
 
+def _parse_cancel_key(request_id: str) -> str:
+    return f"parse:cancel:{request_id}"
+
+
+def _match_cancel_key(request_id: str) -> str:
+    return f"match:cancel:{request_id}"
+
+
 def set_parse_phase(request_id: str, phase: str | None) -> None:
     if not phase:
         redis_conn.delete(_phase_key(request_id), _ocr_since_key(request_id))
@@ -42,3 +50,27 @@ def get_parse_progress(request_id: str) -> dict:
         "ocr_started_at": ocr_started_at,
         "ocr_elapsed_sec": ocr_elapsed_sec,
     }
+
+
+def request_parse_cancel(request_id: str) -> None:
+    redis_conn.setex(_parse_cancel_key(request_id), _TTL_SEC, "1")
+
+
+def clear_parse_cancel(request_id: str) -> None:
+    redis_conn.delete(_parse_cancel_key(request_id))
+
+
+def is_parse_cancelled(request_id: str) -> bool:
+    return bool(redis_conn.get(_parse_cancel_key(request_id)))
+
+
+def request_match_cancel(request_id: str) -> None:
+    redis_conn.setex(_match_cancel_key(request_id), _TTL_SEC, "1")
+
+
+def clear_match_cancel(request_id: str) -> None:
+    redis_conn.delete(_match_cancel_key(request_id))
+
+
+def is_match_cancelled(request_id: str) -> bool:
+    return bool(redis_conn.get(_match_cancel_key(request_id)))

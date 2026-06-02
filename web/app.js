@@ -95,19 +95,30 @@ function syncOcrTimingModal(st, _tick, { trackOcr = false } = {}) {
 }
 
 /** Ожидание фоновой задачи (парсинг OCR на скане может занять несколько минут). */
-async function waitJobStatus(statusUrl, { maxSeconds = 360, label = "Задача", formatBox, trackOcr = false }) {
+async function waitJobStatus(
+  statusUrl,
+  { maxSeconds = 360, label = "Задача", formatBox, trackOcr = false, returnLastStatusOnTimeout = false }
+) {
   try {
+    let lastStatus = null;
     for (let i = 0; i < maxSeconds; i++) {
       const st = await api(statusUrl);
+      lastStatus = st;
       syncOcrTimingModal(st, i, { trackOcr });
       if (formatBox) formatBox(st, i);
       if (st.status === "failed") {
         throw new Error(st.error || `${label}: не удалось выполнить.`);
       }
+      if (st.status === "cancelled") {
+        throw new Error(st.error || `${label} отменена пользователем.`);
+      }
       if (st.status === "completed") {
         return st;
       }
       await sleep(1000);
+    }
+    if (returnLastStatusOnTimeout) {
+      return lastStatus || { status: "timeout" };
     }
     throw new Error(
       `${label} не завершилась за ${maxSeconds} с. ` +
@@ -158,10 +169,30 @@ function setStage(stage, meta) {
 }
 
 function setProcessingButtons(disabled) {
-  ["processAllBtn", "loadResults", "createExport"].forEach((id) => {
+  ["processAllBtn", "cancelProcessingBtn", "loadResults", "createExport"].forEach((id) => {
     const el = $(id);
     if (el) el.disabled = disabled;
   });
+}
+
+async function cancelCurrentProcessing({ silent = false } = {}) {
+  const rid = ($("activeRequestId").value || $("ocrCalRequestId")?.value || "").trim();
+  if (!rid) {
+    if (!silent) alert("Укажите ID заявки");
+    return;
+  }
+  const [parseRes, matchRes] = await Promise.allSettled([
+    api(`/requests/${rid}/parsing/cancel`, { method: "POST" }),
+    api(`/requests/${rid}/matching/cancel`, { method: "POST" }),
+  ]);
+  hideOcrTimingModal();
+  const parseStatus = parseRes.status === "fulfilled" ? parseRes.value?.status : "n/a";
+  const matchStatus = matchRes.status === "fulfilled" ? matchRes.value?.status : "n/a";
+  $("statusBox").textContent =
+    `Отмена запрошена.\n` +
+    `Парсинг: ${parseStatus}\n` +
+    `Сопоставление: ${matchStatus}`;
+  if (!silent) alert("Запрос на отмену отправлен. Текущая обработка будет мягко остановлена.");
 }
 
 function switchAdminTab(tab) {
@@ -350,6 +381,13 @@ async function processAll() {
 }
 
 $("processAllBtn").addEventListener("click", processAll);
+$("cancelProcessingBtn")?.addEventListener("click", async () => {
+  try {
+    await cancelCurrentProcessing();
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось отменить обработку");
+  }
+});
 
 function openManualSearch(parsedItemId) {
   manualTargetParsedId = parsedItemId;
@@ -772,16 +810,26 @@ async function checkMatchingForOcrRequest() {
     method: "POST",
     body: JSON.stringify({ force_reparse: true }),
   });
-  await waitJobStatus(`/requests/${requestId}/parsing/status`, {
-    maxSeconds: 420,
+  const parseResult = await waitJobStatus(`/requests/${requestId}/parsing/status`, {
+    maxSeconds: 1800,
     label: "Парсинг",
     trackOcr: true,
+    returnLastStatusOnTimeout: true,
     formatBox: (st) => {
       $("adminImportReport").textContent =
         `Проверка матчинга\nПарсинг: ${st.status}\nИзвлечено: ${st.parsed_items || 0}` +
         (st.ocr_active ? `\nOCR: ${formatDuration(st.ocr_elapsed_sec ?? 0)}` : "");
     },
   });
+  if (!parseResult || parseResult.status !== "completed") {
+    $("adminImportReport").textContent =
+      `Проверка матчинга: парсинг ещё выполняется.\n` +
+      `ID заявки: ${requestId}\n` +
+      `Текущий статус: ${parseResult?.status || "running"}\n` +
+      `OCR может идти долго на многостраничных сканах.\n` +
+      `Повторите проверку через 2-5 минут или посмотрите логи worker.`;
+    return;
+  }
 
   $("adminImportReport").textContent = "Проверка матчинга: запуск сопоставления...";
   await api(`/requests/${requestId}/matching/start`, {
@@ -925,6 +973,14 @@ $("ocrCheckMatchingBtn")?.addEventListener("click", async () => {
     alert(e?.error?.message || e?.message || "Не удалось выполнить проверку матчинга");
   } finally {
     if (btn) btn.disabled = false;
+  }
+});
+
+$("cancelOcrBtn")?.addEventListener("click", async () => {
+  try {
+    await cancelCurrentProcessing({ silent: false });
+  } catch (e) {
+    alert(e?.error?.message || "Не удалось отменить OCR/матчинг");
   }
 });
 

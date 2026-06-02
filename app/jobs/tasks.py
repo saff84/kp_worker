@@ -23,7 +23,13 @@ from app.services.hybrid_search import ensure_catalog_index, vector_search
 from app.services.stop_words import load_stop_words
 from app.services.ocr_calibration import load_ocr_calibration
 from app.services.storage import export_path
-from app.jobs.parse_progress import set_parse_phase
+from app.jobs.parse_progress import (
+    clear_match_cancel,
+    clear_parse_cancel,
+    is_match_cancelled,
+    is_parse_cancelled,
+    set_parse_phase,
+)
 
 
 _STOP_WORDS = {
@@ -634,7 +640,7 @@ def _preprocess_ocr_image(img: Image.Image) -> Image.Image:
     return bw
 
 
-def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
+def _pdf_ocr_text_lines(path: Path, max_pages: int = 15, request_id: str | None = None) -> list[str]:
     try:
         import fitz  # pymupdf
     except ImportError:
@@ -645,6 +651,8 @@ def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:
     try:
         doc = fitz.open(str(path))
         for page_idx in range(min(len(doc), max_pages)):
+            if request_id and is_parse_cancelled(request_id):
+                return []
             page = doc[page_idx]
             text = (page.get_text("text") or "").strip()
             if len(text) >= 30:
@@ -758,7 +766,7 @@ def _extract_rows_from_file(storage_key: str, request_id: str | None = None) -> 
         if request_id:
             set_parse_phase(request_id, "ocr")
         try:
-            ocr_lines = _pdf_ocr_text_lines(path, max_pages=15)
+            ocr_lines = _pdf_ocr_text_lines(path, max_pages=15, request_id=request_id)
         finally:
             if request_id:
                 set_parse_phase(request_id, "extracting")
@@ -859,6 +867,11 @@ def parsing_task(request_id: str) -> None:
                 parsed_rows = _rows_to_parsed_lines(
                     [{"name": line.strip()} for line in req.input_text.splitlines() if line.strip()]
                 )
+            if is_parse_cancelled(request_id):
+                req.parse_status = "cancelled"
+                req.status = "uploaded"
+                req.total_items = 0
+                return
             if not parsed_rows:
                 latest_file = db.scalar(
                     select(UploadedFile)
@@ -868,6 +881,11 @@ def parsing_task(request_id: str) -> None:
                 if latest_file:
                     rows = _extract_rows_from_file(latest_file.storage_key, request_id=request_id)
                     parsed_rows = _rows_to_parsed_lines(rows)
+            if is_parse_cancelled(request_id):
+                req.parse_status = "cancelled"
+                req.status = "uploaded"
+                req.total_items = 0
+                return
             if not parsed_rows:
                 req.parse_status = "failed"
                 req.status = "uploaded"
@@ -899,6 +917,7 @@ def parsing_task(request_id: str) -> None:
             req.updated_at = datetime.now(timezone.utc)
             db.commit()
             set_parse_phase(request_id, None)
+            clear_parse_cancel(request_id)
 
 
 def matching_task(request_id: str, threshold: float) -> None:
@@ -923,6 +942,12 @@ def matching_task(request_id: str, threshold: float) -> None:
         match_rules = list_catalog_match_rules()
         auto, review = 0, 0
         for item in items:
+            if is_match_cancelled(request_id):
+                req.match_status = "cancelled"
+                req.updated_at = datetime.now(timezone.utc)
+                db.commit()
+                clear_match_cancel(request_id)
+                return
             blocked_word = _contains_stop_word(item.item_name, stop_words)
             if blocked_word:
                 review += 1
@@ -1102,6 +1127,7 @@ def matching_task(request_id: str, threshold: float) -> None:
         req.status = "completed" if review == 0 else "needs_review"
         req.updated_at = datetime.now(timezone.utc)
         db.commit()
+        clear_match_cancel(request_id)
 
 
 def export_task(request_id: str, export_id: str, include_unmatched: bool = True) -> None:

@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader
 import xlrd
 from docx import Document
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 import pytesseract
 import pdfplumber
 
@@ -377,6 +377,13 @@ _PDF_NOISE = {
     "инн",
     "кпп",
     "огрн",
+    "код",
+    "завод изготовитель",
+    "наименование и техническая характеристика",
+    "обозначение документа",
+    "масса единицы",
+    "примечание",
+    "лист",
 }
 
 
@@ -384,8 +391,24 @@ def _looks_like_position(name: str) -> bool:
     text = (name or "").strip()
     if len(text) < 4:
         return False
+    low = text.lower()
+    if any(n in low for n in _PDF_NOISE):
+        return False
+    # Repeated separators/noise like "---- || --".
+    if re.fullmatch(r"[\s\-_|.:,;/\\]+", text):
+        return False
     alnum = sum(1 for ch in text if ch.isalnum())
-    return alnum >= max(4, int(len(text) * 0.25))
+    if alnum < max(4, int(len(text) * 0.35)):
+        return False
+    letters = sum(1 for ch in text if ch.isalpha())
+    digits = sum(1 for ch in text if ch.isdigit())
+    # Typical position name should contain meaningful letters.
+    if letters < 3:
+        return False
+    # Guard from mostly-numeric table metadata.
+    if digits > 0 and letters / max(1, digits) < 0.5 and len(text) < 22:
+        return False
+    return True
 
 
 def _filter_position_rows(rows: list[dict]) -> list[dict]:
@@ -400,14 +423,41 @@ def _filter_position_rows(rows: list[dict]) -> list[dict]:
     return filtered
 
 
+def _extract_qty_unit(value: str) -> tuple[str | None, str | None]:
+    text = (value or "").strip().lower()
+    if not text:
+        return None, None
+    # Prefer right-side quantity in line tail.
+    m = re.search(
+        r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(шт|шту?к|п\.?\s*м\.?|м2|м3|м|кг|т|компл(?:ект)?|уп)\b",
+        text,
+    )
+    if m:
+        return m.group(1).replace(",", "."), m.group(2)
+    m = re.search(r"(?<!\d)(\d+(?:[.,]\d+)?)(?!\d)\s*$", text)
+    if m:
+        return m.group(1).replace(",", "."), None
+    return None, None
+
+
 def _parse_text_lines_to_rows(text_lines: list[str]) -> list[dict]:
     lines: list[dict] = []
+    pending_name: str | None = None
+
+    def flush_pending() -> None:
+        nonlocal pending_name
+        if pending_name and _looks_like_position(pending_name):
+            lines.append({"name": pending_name})
+        pending_name = None
+
     for raw in text_lines:
         line = raw.strip()
         if not line:
             continue
+        appended = False
         m = re.match(r"^\s*\d+[\.\)]\s+(.+?)\s+(\d+(?:[.,]\d+)?)\s+([A-Za-zА-Яа-яёЁ\.]+)\s*$", line)
         if m:
+            flush_pending()
             lines.append(
                 {
                     "name": m.group(1).strip(),
@@ -415,9 +465,11 @@ def _parse_text_lines_to_rows(text_lines: list[str]) -> list[dict]:
                     "unit": m.group(3).strip(),
                 }
             )
+            appended = True
             continue
         cols = [c.strip() for c in re.split(r"\t+| {2,}|;", line) if c.strip()]
         if len(cols) >= 4:
+            flush_pending()
             lines.append(
                 {
                     "name": cols[0],
@@ -426,14 +478,38 @@ def _parse_text_lines_to_rows(text_lines: list[str]) -> list[dict]:
                     "quantity": cols[3],
                 }
             )
+            appended = True
         else:
             # OCR from selected columns often yields "Наименование ... 26".
             m_short = re.match(r"^(.+?)\s+(\d+(?:[.,]\d+)?)\s*$", line)
             if m_short and _looks_like_position(m_short.group(1)):
+                flush_pending()
                 lines.append({"name": m_short.group(1).strip(), "quantity": m_short.group(2).replace(",", ".")})
-                continue
-        if _looks_like_position(line):
-            lines.append({"name": line})
+                appended = True
+            else:
+                qty, unit = _extract_qty_unit(line)
+                if qty and _looks_like_position(re.sub(r"\d+(?:[.,]\d+)?\s*$", "", line).strip()):
+                    flush_pending()
+                    name = re.sub(r"\s*\d+(?:[.,]\d+)?\s*(?:[a-zа-я.]+)?\s*$", "", line, flags=re.IGNORECASE).strip()
+                    if _looks_like_position(name):
+                        row: dict = {"name": name, "quantity": qty}
+                        if unit:
+                            row["unit"] = unit
+                        lines.append(row)
+                        appended = True
+                elif _looks_like_position(line):
+                    # Multi-line item name: append continuation until quantity appears.
+                    if pending_name:
+                        pending_name = f"{pending_name} {line}".strip()
+                    else:
+                        pending_name = line
+                    appended = True
+        if not appended and _looks_like_position(line):
+            if pending_name:
+                pending_name = f"{pending_name} {line}".strip()
+            else:
+                pending_name = line
+    flush_pending()
     return _filter_position_rows(lines)
 
 
@@ -474,10 +550,14 @@ def _ocr_line_map_from_crop(
     if x1 <= x0 or y1 <= y0:
         return []
     crop = img.crop((x0, y0, x1, y1))
+    crop = _preprocess_ocr_image(crop)
+    cfg = "--psm 6"
+    if numeric_only:
+        cfg = "--psm 6 -c tessedit_char_whitelist=0123456789.,штмкгupUPM"
     data = pytesseract.image_to_data(
         crop,
         lang="rus+eng",
-        config="--psm 6",
+        config=cfg,
         output_type=pytesseract.Output.DICT,
     )
     words: list[tuple[int, int, int, str]] = []
@@ -543,6 +623,15 @@ def _merge_name_qty_lines(name_lines: list[tuple[float, str]], qty_lines: list[t
         else:
             merged.append(name)
     return merged
+
+
+def _preprocess_ocr_image(img: Image.Image) -> Image.Image:
+    gray = ImageOps.grayscale(img)
+    gray = ImageOps.autocontrast(gray, cutoff=2)
+    gray = gray.filter(ImageFilter.MedianFilter(size=3))
+    # Adaptive-like threshold via point transform for cleaner text.
+    bw = gray.point(lambda p: 255 if p > 168 else 0)
+    return bw
 
 
 def _pdf_ocr_text_lines(path: Path, max_pages: int = 15) -> list[str]:

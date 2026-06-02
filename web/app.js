@@ -763,6 +763,66 @@ async function saveOcrCalibration() {
   alert("Калибровка OCR сохранена");
 }
 
+async function checkMatchingForOcrRequest() {
+  const requestId = ($("ocrCalRequestId").value || "").trim();
+  if (!requestId) return alert("Введите ID заявки");
+  $("activeRequestId").value = requestId;
+  $("adminImportReport").textContent = "Проверка матчинга: запуск парсинга...";
+  await api(`/requests/${requestId}/parsing/start`, {
+    method: "POST",
+    body: JSON.stringify({ force_reparse: true }),
+  });
+  await waitJobStatus(`/requests/${requestId}/parsing/status`, {
+    maxSeconds: 420,
+    label: "Парсинг",
+    trackOcr: true,
+    formatBox: (st) => {
+      $("adminImportReport").textContent =
+        `Проверка матчинга\nПарсинг: ${st.status}\nИзвлечено: ${st.parsed_items || 0}` +
+        (st.ocr_active ? `\nOCR: ${formatDuration(st.ocr_elapsed_sec ?? 0)}` : "");
+    },
+  });
+
+  $("adminImportReport").textContent = "Проверка матчинга: запуск сопоставления...";
+  await api(`/requests/${requestId}/matching/start`, {
+    method: "POST",
+    body: JSON.stringify({ strategy: "default", auto_approve_threshold: 0.72 }),
+  });
+  await waitJobStatus(`/requests/${requestId}/matching/status`, {
+    maxSeconds: 240,
+    label: "Сопоставление",
+    formatBox: (st) => {
+      $("adminImportReport").textContent =
+        `Проверка матчинга\nСопоставление: ${st.status}\n` +
+        `Автоподбор: ${st.auto_matched || 0}, Требует проверки: ${st.needs_review || 0}`;
+    },
+  });
+
+  const res = await api(`/requests/${requestId}/results?page=1&page_size=500`);
+  const items = res.items || [];
+  const total = items.length;
+  const autoMatched = items.filter((x) => x?.match?.status === "auto_matched").length;
+  const review = items.filter((x) => x?.match?.status === "needs_review").length;
+  const avgConf = total
+    ? Math.round(
+        (items.reduce((acc, x) => acc + Number(x?.match?.best_candidate?.score || 0), 0) / total) * 100
+      )
+    : 0;
+  const weak = items
+    .filter((x) => Number(x?.match?.best_candidate?.score || 0) < 0.65)
+    .slice(0, 10)
+    .map((x) => `- ${(x?.source?.item_name || "-").slice(0, 120)} (${Math.round(Number(x?.match?.best_candidate?.score || 0) * 100)}%)`);
+  $("adminImportReport").textContent =
+    `Проверка матчинга завершена\n` +
+    `ID заявки: ${requestId}\n` +
+    `Позиции: ${total}\n` +
+    `Автоподбор: ${autoMatched}\n` +
+    `Требует проверки: ${review}\n` +
+    `Средняя уверенность: ${avgConf}%\n\n` +
+    `Слабые позиции (<65%):\n${weak.length ? weak.join("\n") : "- нет"}`;
+  await loadResults();
+}
+
 $("importCatalogBtn").addEventListener("click", async () => {
   await uploadAdminFile("/admin/catalog/import", "catalogImportFile");
 });
@@ -853,6 +913,18 @@ $("ocrSaveCalibrationBtn")?.addEventListener("click", async () => {
     await saveOcrCalibration();
   } catch (e) {
     alert(e?.error?.message || "Не удалось сохранить OCR калибровку");
+  }
+});
+
+$("ocrCheckMatchingBtn")?.addEventListener("click", async () => {
+  const btn = $("ocrCheckMatchingBtn");
+  if (btn) btn.disabled = true;
+  try {
+    await checkMatchingForOcrRequest();
+  } catch (e) {
+    alert(e?.error?.message || e?.message || "Не удалось выполнить проверку матчинга");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 });
 
